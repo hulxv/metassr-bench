@@ -1,0 +1,103 @@
+name: Bench
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: MetaSSR Benchmark
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install MetaCall
+        run: curl -sL https://raw.githubusercontent.com/metacall/install/master/install.sh | sh
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install wrk
+        run: sudo apt-get update && sudo apt-get install -y wrk
+
+      - name: Clone and build MetaSSR
+        run: |
+          git clone https://github.com/metacall/metassr.git /tmp/metassr
+          cd /tmp/metassr
+          cargo build --release
+          sudo cp target/release/metassr /usr/local/bin/metassr || true
+
+      - name: Setup MetaSSR benchmark app
+        working-directory: ./apps/metassr-app
+        run: |
+          npm install
+          metassr build || true
+
+      - name: Start MetaSSR server
+        working-directory: ./apps/metassr-app
+        run: |
+          metassr start --port 8080 &
+          sleep 10
+
+      - name: Run MetaSSR benchmark
+        run: python3 benchmark.py --skip-build
+
+      - name: Stop MetaSSR server
+        run: kill $(lsof -ti:8080) 2>/dev/null || true
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: .bench/
+          retention-days: 90
+
+  compare:
+    name: Framework Comparison
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install wrk
+        run: sudo apt-get update && sudo apt-get install -y wrk
+
+      - name: Run comparison (Docker)
+        run: python3 compare.py --docker
+
+      - name: Upload comparison results
+        uses: actions/upload-artifact@v4
+        with:
+          name: comparison-results-${{ github.run_id }}
+          path: .bench/apps/
+          retention-days: 90
